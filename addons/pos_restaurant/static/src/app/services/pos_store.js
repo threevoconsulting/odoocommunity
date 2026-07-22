@@ -149,15 +149,24 @@ patch(PosStore.prototype, {
         const srcKey = srcLine.preparationKey;
         const destKey = destLine.preparationKey;
         const srcQty = srcPrep[srcKey]?.quantity;
+        const existingDestQty = destPrep[destKey]?.quantity || 0;
 
         if (srcQty) {
             if (srcQty <= qty) {
-                const newPrep = { ...srcPrep[srcKey], uuid: destLine.uuid };
+                const newPrep = {
+                    ...srcPrep[srcKey],
+                    uuid: destLine.uuid,
+                    quantity: existingDestQty + srcQty,
+                };
                 destPrep[destKey] = newPrep;
                 delete srcPrep[srcKey];
             } else {
                 srcPrep[srcKey].quantity = srcQty - qty;
-                destPrep[destKey] = { ...srcPrep[srcKey], uuid: destLine.uuid, quantity: qty };
+                destPrep[destKey] = {
+                    ...srcPrep[srcKey],
+                    uuid: destLine.uuid,
+                    quantity: existingDestQty + qty,
+                };
             }
         }
     },
@@ -661,7 +670,13 @@ patch(PosStore.prototype, {
             this.setOrder(currentOrder);
         } else {
             const potentialsOrders = this.models["pos.order"].filter(
-                (o) => !o.table_id && !o.finalized && o.lines.length === 0
+                (o) =>
+                    !o.table_id &&
+                    !o.finalized &&
+                    o.lines.length === 0 &&
+                    !o.floating_order_name &&
+                    !o.preset_time &&
+                    (!o.preset_id || o.preset_id.id === this.config.default_preset_id?.id)
             );
 
             if (potentialsOrders.length) {

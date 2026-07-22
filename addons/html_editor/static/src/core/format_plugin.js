@@ -8,6 +8,7 @@ import { cleanTextNode, fillEmpty, removeClass, splitTextNode, unwrapContents } 
 import {
     areSimilarElements,
     isContentEditable,
+    isContentEditableAncestor,
     isElement,
     isEmptyBlock,
     isEmptyTextNode,
@@ -361,11 +362,11 @@ export class FormatPlugin extends Plugin {
             }
             const listItem = closestElement(n, "li");
             if (listItem && this.dependencies.selection.areNodeContentsFullySelected(listItem)) {
-                const hasFontSizeStyle =
-                    formatName === "setFontSizeClassName"
-                        ? listItem.classList.contains(formatProps?.className)
-                        : listItem.style.fontSize;
-                return !hasFontSizeStyle;
+                if (formatName === "setFontSizeClassName") {
+                    return !listItem.classList.contains(formatProps?.className);
+                } else if (formatName === "fontSize") {
+                    return !listItem.style.fontSize;
+                }
             }
             return true;
         });
@@ -396,7 +397,8 @@ export class FormatPlugin extends Plugin {
                 parentNode &&
                 !isBlock(parentNode) &&
                 this.dependencies.split.isUnsplittable(parentNode) &&
-                this.dependencies.selection.areNodeContentsFullySelected(parentNode)
+                this.dependencies.selection.areNodeContentsFullySelected(parentNode) &&
+                !isContentEditableAncestor(parentNode)
             ) {
                 inlineAncestors.push(parentNode);
             }

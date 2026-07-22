@@ -4,6 +4,7 @@ from base64 import b64encode
 from datetime import timedelta
 
 from odoo import api, fields, models, _
+from odoo.tools import str2bool
 
 from odoo.addons.account.models.company import PEPPOL_DEFAULT_COUNTRIES, PEPPOL_LIST
 from odoo.addons.account_edi_proxy_client.models.account_edi_proxy_user import AccountEdiProxyError
@@ -27,9 +28,60 @@ class AccountMoveSend(models.AbstractModel):
             default_sending_methods.add('peppol')
         return default_sending_methods
 
+    @api.model
+    def _generate_and_send_invoices(self, moves, from_cron=False, allow_raising=True, allow_fallback_pdf=False, **custom_settings):
+        for partner, company in moves.grouped(lambda m: (m.commercial_partner_id, m.company_id)):
+            if partner.with_company(company).peppol_verification_state != 'valid' and self._is_applicable_to_company('peppol', company):
+                partner.button_account_peppol_check_partner_endpoint(company=company)
+
+        return super()._generate_and_send_invoices(moves, from_cron, allow_raising, allow_fallback_pdf, **custom_settings)
+
     # -------------------------------------------------------------------------
     # ALERTS
     # -------------------------------------------------------------------------
+
+    def _get_peppol_what_is_peppol_alert(self, moves, moves_data, relevant_moves):
+        any_moves_french = bool(relevant_moves.company_id.filtered(lambda c: c._peppol_is_french_company()))
+        if any_moves_french:
+            name = self.env._("Why should I use French E-Invoicing ?")
+            action_text = self.env._("France - E-Invoicing (Approved Platform)")
+        else:
+            name = self.env._("Why should I use PEPPOL ?")
+            action_text = self.env._("Why should you use it ?")
+
+        pdp_module = self.env['ir.module.module'].sudo()._get('l10n_fr_pdp')
+        if any_moves_french and pdp_module and pdp_module.state != 'installed':
+            action = pdp_module._get_records_action()
+        else:
+            action = {
+                'name': name,
+                'type': 'ir.actions.client',
+                'tag': 'account_peppol.what_is_peppol',
+                'target': 'new',
+                'context': {
+                    'footer': False,
+                    'dialog_size': 'medium',
+                    'action_on_activate': self.action_what_is_peppol_activate(moves),
+                },
+            }
+        return {
+            'level': 'info',
+            'action_text': action_text,
+            'action': action,
+        }
+
+    def _get_peppol_what_is_peppol_message(self, companies, moves, relevant_moves):
+        if relevant_moves.company_id.filtered(lambda c: c._peppol_is_french_company()):
+            return self.env._("To use the Approved Platform for French E-Invoicing, install the module")
+        return self.env._("You can send this invoice electronically via Peppol.")
+
+    def _get_peppol_partner_want_peppol_message(self, partners, relevant_moves):
+        if relevant_moves.company_id.filtered(lambda c: c._peppol_is_french_company()):
+            return self.env._("To use the Approved Platform for French E-Invoicing, install the module")
+        return self.env._("%s has requested electronic invoices reception on Peppol.", partners.display_name)
+
+    def _get_peppol_what_is_pdp_message(self, companies, moves, relevant_moves):
+        return self.env._("To use the Approved Platform for French E-Invoicing, install the module")
 
     def _get_alerts(self, moves, moves_data):
         # EXTENDS 'account'
@@ -52,23 +104,10 @@ class AccountMoveSend(models.AbstractModel):
                 'action': invalid_partners._get_records_action(name=_("Check Partner(s)")),
             }
         not_peppol_moves = moves.filtered(lambda m: 'peppol' not in moves_data[m]['sending_methods'])
-        what_is_peppol_alert = {
-            'level': 'info',
-            'action_text': _("Why should you use it ?"),
-            'action': {
-                'name': _("Why should I use PEPPOL ?"),
-                'type': 'ir.actions.client',
-                'tag': 'account_peppol.what_is_peppol',
-                'target': 'new',
-                'context': {
-                    'footer': False,
-                    'dialog_size': 'medium',
-                    'action_on_activate': self.action_what_is_peppol_activate(moves),
-                },
-            },
-        }
-        info_always_on_countries = {'BE', 'FI', 'LU', 'LV', 'NL', 'NO', 'SE'}
-        any_moves_not_sent_peppol = any(not move.peppol_is_sent for move in moves)
+        info_always_on_countries = {'BE', 'FI', 'LU', 'LV', 'NL', 'NO', 'SE', 'FR'}
+        moves_not_sent_peppol = moves.filtered(lambda m: not m.peppol_is_sent)
+        any_moves_not_sent_peppol = bool(moves_not_sent_peppol)
+        what_is_peppol_alert = self._get_peppol_what_is_peppol_alert(moves, moves_data, moves_not_sent_peppol)
         always_on_companies = moves.company_id.filtered(
             lambda c: c.country_code in info_always_on_countries and not c.peppol_can_send
         )
@@ -79,7 +118,7 @@ class AccountMoveSend(models.AbstractModel):
         )):
             alerts.pop('account_edi_ubl_cii_configure_company', False)
             alerts['account_peppol_what_is_peppol'] = {
-                'message': _("You can send this invoice electronically via Peppol."),
+                'message': self._get_peppol_what_is_peppol_message(always_on_companies, moves, moves_not_sent_peppol),
                 **what_is_peppol_alert,
             }
         elif all((
@@ -89,10 +128,17 @@ class AccountMoveSend(models.AbstractModel):
             len(peppol_not_selected_partners) == 1,  # Check for not peppol partners that are on the network
         )):
             alerts['account_peppol_partner_want_peppol'] = {
-                'message': _(
-                    "%s has requested electronic invoices reception on Peppol.",
-                    peppol_not_selected_partners.display_name
-                ),
+                'message': self._get_peppol_partner_want_peppol_message(peppol_not_selected_partners, moves_not_sent_peppol),
+                **what_is_peppol_alert,
+            }
+        elif (
+            not str2bool(self.env['ir.config_parameter'].sudo().get_param("account_peppol.disable_pdp_warning", False), default=False)
+            and (french_non_pdp_companies := moves.company_id.filtered(
+                 lambda company: company._peppol_is_french_company() and company._get_peppol_proxy_type() != 'pdp'
+             ))
+        ):
+            alerts['l10n_fr_pdp_what_is_pdp'] = {
+                'message': self._get_peppol_what_is_pdp_message(french_non_pdp_companies, moves, moves),
                 **what_is_peppol_alert,
             }
         return alerts
@@ -252,7 +298,7 @@ class AccountMoveSend(models.AbstractModel):
             else:
                 # the response only contains message uuids,
                 # so we have to rely on the order to connect peppol messages to account.move
-                attachments_linked_message = _("The invoice has been sent to the Peppol Access Point. The following attachments were sent with the XML:")
+                attachments_linked_message = self._get_peppol_attachments_linked_message(edi_user)
                 attachments_not_linked_message = _("Some attachments could not be sent with the XML:")
                 for message, (invoice, invoice_data) in zip(response['messages'], invoices_data_peppol.items()):
                     invoice.peppol_message_uuid = message['message_uuid']
@@ -290,6 +336,9 @@ class AccountMoveSend(models.AbstractModel):
                             'res_id': new_message.id,
                         })
                 self.env.ref('account_peppol.ir_cron_peppol_get_message_status')._trigger(at=fields.Datetime.now() + timedelta(minutes=5))
+
+    def _get_peppol_attachments_linked_message(self, edi_user):
+        return _("The invoice has been sent to the Peppol Access Point. The following attachments were sent with the XML:")
 
     def action_what_is_peppol_activate(self, moves):
         companies = moves.company_id

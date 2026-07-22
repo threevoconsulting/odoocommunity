@@ -945,7 +945,7 @@ class ResPartner(models.Model):
 
     @api.model
     def _convert_hu_local_to_eu_vat(self, local_vat):
-        if self._check_tin_hu_companies_re.match(local_vat):
+        if self._check_tin_hu_companies_re.match(local_vat) or self._check_tin_hu_european_re.match(local_vat):
             return f'HU{local_vat[:8]}'
         return False
 
@@ -964,8 +964,7 @@ class ResPartner(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         res = super().create(vals_list)
-        if self.env.context.get('import_file'):
-            res.env.remove_to_compute(self._fields['vies_valid'], res)
+        res.env.remove_to_compute(self._fields['vies_valid'], res)
         return res
 
     def write(self, vals):
