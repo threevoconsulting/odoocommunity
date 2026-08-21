@@ -130,7 +130,7 @@ class ResCompany(models.Model):
             return
         account_ids = self.env['account.account'].search([
             ('account_type', 'in', ['asset_receivable', 'liability_payable']),
-            ('company_ids', 'in', companies.ids),
+            ('company_ids', 'parent_of', companies.ids),
         ]).ids
         date_company_conditions = SQL(
             '(%s)',
@@ -175,7 +175,7 @@ class ResCompany(models.Model):
     def _check_pdp_identifier(self, pdp_identifier, warning=False):
         return pdp_identifier and PDP_identifier_re.match(pdp_identifier)
 
-    def _reset_peppol_configuration(self):
+    def _reset_peppol_configuration(self, soft=False):
         # Extend `account_peppol` to reset PDP specific fields
         self.write({
             'l10n_fr_pdp_send_to_ppf': True,
@@ -200,6 +200,10 @@ class ResCompany(models.Model):
             'urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100::CrossIndustryInvoice##urn:cen.eu:en16931:2017#compliant#urn:peppol:france:billing:cius:1.0::D22B': "UN/CEFACT EN16931 French CIUS",
             'urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100::CrossIndustryInvoice##urn:cen.eu:en16931:2017#conformant#urn:peppol:france:billing:extended:1.0::D22B': "UN/CEFACT EN16931 French CTC Extended",
         }
+
+    def _peppol_allows_document_reception(self):
+        self.ensure_one()
+        return super()._peppol_allows_document_reception() and self.country_code != 'FR'
 
     @handle_demo
     def _l10n_fr_pdp_update_pilot_phase(self, value):
@@ -274,7 +278,7 @@ class ResCompany(models.Model):
             'object_uuid': self.pdp_authentication_uuid,
         })
         kyc_status = response.get('kyc_status')
-        if kyc_status in {'success', 'fail'}:
+        if kyc_status == 'success':
             self.pdp_kyc_status = kyc_status
             if self.env['account.move']._can_commit():
                 self.env.cr.commit()

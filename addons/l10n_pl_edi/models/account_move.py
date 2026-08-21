@@ -150,7 +150,7 @@ class AccountMove(models.Model):
             return vat_number
 
         def get_address(partner):
-            return re.sub(r'\n+', r' ', partner._display_address(True))
+            return re.sub(r'\n+', r' ', partner.with_context(without_country_name=True)._display_address(True))
 
         def get_tags(code):
             return self.env['account.account.tag']._get_tax_tags(code, self.env.ref('base.pl').id)
@@ -284,7 +284,7 @@ class AccountMove(models.Model):
             'special_transactions': {'OSS_Base', 'OSS_Tax', 'Triangular Sale'} & invoice_tag_names,
             'triangular_transaction': '1' if 'Triangular Sale' in invoice_tag_names else '2',
             'prefiks_podatnika': bool({'K_21', 'K_12', 'Triangular Sale'} & invoice_tag_names),
-            'reverse_charge': any(invoice_line_vals['P_12'] in ('np I', 'np II', 'oo') for invoice_line_vals in invoice_lines_vals),
+            'reverse_charge': any(invoice_line_vals['P_12'] == 'oo' for invoice_line_vals in invoice_lines_vals),
         }
 
     def _l10n_pl_edi_render_xml(self):
